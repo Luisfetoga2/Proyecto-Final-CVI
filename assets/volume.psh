@@ -1,0 +1,27 @@
+Texture3D<float> VolumeTex;
+SamplerState sampLinear;
+
+float4 main(float4 Pos : SV_POSITION, float2 UV : TEX_COORD) : SV_TARGET
+{
+    float3 rayDir = normalize(float3(UV - 0.5, 1)); // cámara ortográfica
+    float3 rayPos = float3(UV, 0);
+
+    float4 accum = float4(0, 0, 0, 0);
+    float stepSize = 0.01;
+
+    for (int i = 0; i < 64; ++i)
+    {
+        float val = VolumeTex.SampleLevel(sampLinear, rayPos, 0);
+        float4 sampleCol = float4(0.1, 0.5, 0.8, val); // azul agua
+        sampleCol.a = max(val * 0.1, 0.001);
+        
+        accum.rgb += (1 - accum.a) * sampleCol.rgb * sampleCol.a;
+        accum.a += (1 - accum.a) * sampleCol.a;
+        
+        rayPos += rayDir * stepSize;
+        if (rayPos.x > 1 || rayPos.y > 1 || rayPos.z > 1)
+            break;
+    }
+
+    return float4(accum.rgb, accum.a);
+}
