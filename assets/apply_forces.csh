@@ -1,8 +1,11 @@
-RWTexture3D<float3> Velocity;
+RWTexture3D<float4> Velocity;
 cbuffer Constants { float timestep; float3 forces; };
+
 
 [numthreads(8, 8, 8)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-    Velocity[id] += timestep * forces;
+    float4 v = Velocity[id];
+    v.xyz += timestep * forces;
+    Velocity[id] = v;
 }

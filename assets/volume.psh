@@ -1,34 +1,29 @@
 Texture3D<float4> VolumeTex;
 SamplerState sampLinear;
 
-float4 main(float4 Pos : SV_POSITION, float2 UV : TEX_COORD) : SV_TARGET
+float4 main(float4 Pos : SV_POSITION, float3 WorldPos : TEX_COORD) : SV_TARGET
 {
-    float3 rayDir = normalize(float3(UV - 0.5, 1));
-    float3 rayPos = float3(UV, 0);
+    float3 rayOrigin = float3(0.5, 0.5, -1.0); // For now, fake camera
+    float3 rayDir = normalize(WorldPos - rayOrigin);
 
+    float3 rayPos = rayOrigin;
+    float stepSize = 0.01;
     float4 accum = float4(0, 0, 0, 0);
-    float stepSize = 1;
 
-    for (int i = 0; i < 64; ++i)
+    for (int i = 0; i < 128; ++i)
     {
+        if (any(rayPos < 0.0) || any(rayPos > 1.0)) break;
+
         float4 vel = VolumeTex.SampleLevel(sampLinear, rayPos, 0);
         float mag = length(vel.xyz);
-
-        // Color for direction, black if velocity is zero
         float3 dirColor = (mag > 0.0001) ? abs(normalize(vel.xyz)) : float3(0, 0, 0);
-        
-        //return float4(dirColor, 1.0f);
-        
         float4 sampleCol = float4(dirColor, mag);
 
         sampleCol.a = saturate(mag);
-
         accum.rgb += (1 - accum.a) * sampleCol.rgb * sampleCol.a;
         accum.a += (1 - accum.a) * sampleCol.a;
 
         rayPos += rayDir * stepSize;
-        if (rayPos.x > 1 || rayPos.y > 1 || rayPos.z > 1)
-            break;
     }
 
     return float4(accum.rgb, accum.a);

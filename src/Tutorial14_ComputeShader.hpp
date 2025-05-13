@@ -30,6 +30,7 @@
 #include "SampleBase.hpp"
 #include "ResourceMapping.h"
 #include "BasicMath.hpp"
+#include <FirstPersonCamera.hpp>
 
 namespace Diligent
 {
@@ -55,6 +56,11 @@ private:
 
     int m_ThreadGroupSize = 256;
     int3 m_GridSize       = {32, 32, 32};
+
+    FirstPersonCamera m_Camera;
+
+    RefCntAutoPtr<IBuffer> m_pCameraCB;
+    float4x4               m_ViewProj;
     
     RefCntAutoPtr<ITexture> m_pVelocityTex[2];
     RefCntAutoPtr<ITexture> m_pPressureTex[2];

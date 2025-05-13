@@ -44,7 +44,7 @@ namespace
 {
 
     const int3  kGridSize = {32, 32, 32};
-    const float TimeStep  = 0.0f;
+    const float TimeStep  = 1.0f;
 
 } // namespace
 
@@ -68,7 +68,7 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
                 {
                     if (x >= kGridSize.x / 2 - 2 && x <= kGridSize.x / 2 + 2)
                     {
-                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 0, 1, 1};
+                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, -1, 0, 1};
                     }
                 }
             }
@@ -255,7 +255,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
     {
         MapHelper<ConstantsStruct> CBData(m_pImmediateContext, m_pConstantsForcesCB, MAP_WRITE, MAP_FLAG_DISCARD);
         CBData->timestep = TimeStep;
-        CBData->vec = float3{1.0f, -9.8f, 0.0f};
+        CBData->vec = float3{0.0f, 0.0f, 0.0f};
     }
     if (auto* var = m_pForceSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "Constants"))
         var->Set(m_pConstantsForcesCB);
@@ -287,7 +287,6 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
 {
     GraphicsPipelineStateCreateInfo PSOCreateInfo;
 
-    // Configurar el dise�o de recursos
     PipelineResourceLayoutDesc Layout;
     Layout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
 
@@ -303,11 +302,9 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
     PSOCreateInfo.PSODesc.Name                      = "Render Volume PSO";
     PSOCreateInfo.GraphicsPipeline.NumRenderTargets = 1;
 
-    // Configurar formatos de render target y depth-stencil
     PSOCreateInfo.GraphicsPipeline.RTVFormats[0] = m_pSwapChain->GetDesc().ColorBufferFormat;
     PSOCreateInfo.GraphicsPipeline.DSVFormat     = m_pSwapChain->GetDesc().DepthBufferFormat;
 
-    // Configurar blending para volumen transparente
     BlendStateDesc BlendDesc;
     BlendDesc.RenderTargets[0].BlendEnable   = true;
     BlendDesc.RenderTargets[0].SrcBlend      = BLEND_FACTOR_SRC_ALPHA;
@@ -318,7 +315,6 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
     PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthEnable      = true;
     PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthWriteEnable = true;
 
-    // Crear shaders
     ShaderCreateInfo ShaderCI;
     ShaderCI.SourceLanguage = SHADER_SOURCE_LANGUAGE_HLSL;
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderFactory;
@@ -328,30 +324,47 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
 
     RefCntAutoPtr<IShader> pVS, pPS;
 
-    // Crear Vertex Shader
+    // Vertex Shader
     ShaderCI.Desc.ShaderType = SHADER_TYPE_VERTEX;
     ShaderCI.Desc.Name       = "Volume VS";
     ShaderCI.FilePath        = "volume.vsh";
     m_pDevice->CreateShader(ShaderCI, &pVS);
 
-    // Crear Pixel Shader
+    if (!pVS)
+    {
+        LOG_ERROR_MESSAGE("FIFO: Error creando el shader de vértices.");
+        return;
+    }
+
+    // Pixel Shader
     ShaderCI.Desc.ShaderType = SHADER_TYPE_PIXEL;
     ShaderCI.Desc.Name       = "Volume PS";
     ShaderCI.FilePath        = "volume.psh";
     m_pDevice->CreateShader(ShaderCI, &pPS);
 
+    if (!pPS)
+    {
+        LOG_ERROR_MESSAGE("FIFO: Error creando el shader de píxeles.");
+        return;
+    }
+
     PSOCreateInfo.pVS                    = pVS;
     PSOCreateInfo.pPS                    = pPS;
     PSOCreateInfo.PSODesc.ResourceLayout = Layout;
 
-    // Crear el Pipeline State Object
+    // Create the Pipeline State Object
     m_pDevice->CreateGraphicsPipelineState(PSOCreateInfo, &m_pRenderVolumePSO);
 
     if (m_pRenderVolumePSO)
+    {
+        LOG_INFO_MESSAGE("FIFO: PSO de renderizado de volumen creado correctamente.");
         m_pRenderVolumePSO->CreateShaderResourceBinding(&m_pRenderVolumeSRB, true);
+
+        // Bind the velocity texture to the pixel shader
         if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
             var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
 
+        // Create and bind the linear sampler to the pixel shader
         if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "sampLinear"))
         {
             SamplerDesc SamDesc;
@@ -362,8 +375,29 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
             m_pDevice->CreateSampler(SamDesc, &pSampler);
             var->Set(pSampler);
         }
+    }
     else
+    {
         LOG_ERROR_MESSAGE("FIFO: Error creando el PSO de renderizado de volumen.");
+    }
+
+    // Create the camera constant buffer
+    BufferDesc CBDesc = {};
+    CBDesc.Size = sizeof(float4x4);
+    CBDesc.Usage = USAGE_DYNAMIC;
+    CBDesc.BindFlags = BIND_UNIFORM_BUFFER;
+    CBDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    CBDesc.Name = "CameraCB";
+    m_pDevice->CreateBuffer(CBDesc, nullptr, &m_pCameraCB);
+
+    if (!m_pCameraCB)
+    {
+        LOG_ERROR_MESSAGE("FIFO: Error creando el buffer de constantes de la cámara.");
+    }
+    else
+    {
+        LOG_INFO_MESSAGE("FIFO: Buffer de constantes de la cámara creado correctamente.");
+    }
 }
 
 void Tutorial14_ComputeShader::CreateConsantBuffer()
@@ -391,6 +425,9 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
     CreateFluidShaders();
     CreateShaderResourceBindings();
     CreateRenderVolumePSO();
+
+    m_Camera.SetRotation(0, 0);
+    m_Camera.SetMoveSpeed(5.f);
 }
 
 void Tutorial14_ComputeShader::RenderVolume()
@@ -416,6 +453,12 @@ void Tutorial14_ComputeShader::RenderVolume()
     DrawAttrs.NumVertices = 6; // Fullscreen quad
     DrawAttrs.Flags       = DRAW_FLAG_VERIFY_ALL;
     m_pImmediateContext->Draw(DrawAttrs);
+
+    {
+        MapHelper<float4x4> CBData(m_pImmediateContext, m_pCameraCB, MAP_WRITE, MAP_FLAG_DISCARD);
+        *CBData = m_ViewProj.Transpose();
+    }
+    m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_VERTEX, "CameraCB")->Set(m_pCameraCB);
 }
 
 // Render a frame
@@ -437,6 +480,13 @@ void Tutorial14_ComputeShader::Update(double CurrTime, double ElapsedTime)
 {
     SampleBase::Update(CurrTime, ElapsedTime);
 
+    float4x4 View = m_Camera.GetViewMatrix();
+    float4x4 Proj = float4x4::Projection(
+        PI_F / 4.0f,
+        static_cast<float>(m_pSwapChain->GetDesc().Width) / m_pSwapChain->GetDesc().Height,
+        0.1f, 100.f, false
+    );
+    m_ViewProj = View * Proj;
 }
 
 } // namespace Diligent

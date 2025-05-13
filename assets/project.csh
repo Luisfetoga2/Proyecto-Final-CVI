@@ -1,5 +1,5 @@
 Texture3D<float> Pressure;
-RWTexture3D<float3> Velocity;
+RWTexture3D<float4> Velocity;
 
 [numthreads(8, 8, 8)]
 void main(int3 id : SV_DispatchThreadID)
@@ -16,7 +16,7 @@ void main(int3 id : SV_DispatchThreadID)
         float pU = Pressure[id + int3(0,1,0)];
         float pB = Pressure[id - int3(0,0,1)];
         float pT = Pressure[id + int3(0,0,1)];
-        float3 v = Velocity[id];
+        float4 v = Velocity[id];
         v.x -= 0.5 * (pR - pL);
         v.y -= 0.5 * (pU - pD);
         v.z -= 0.5 * (pT - pB);
