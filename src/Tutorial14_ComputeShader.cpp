@@ -30,6 +30,7 @@
 #include "MapHelper.hpp"
 #include "imgui.h"
 #include "ShaderMacroHelper.hpp"
+#include "ColorConversion.h"
 
 namespace Diligent
 {
@@ -43,7 +44,7 @@ namespace
 {
 
     const int3  kGridSize = {32, 32, 32};
-    const float TimeStep  = 0.1f;
+    const float TimeStep  = 0.0f;
 
 } // namespace
 
@@ -56,15 +57,24 @@ RefCntAutoPtr<IBuffer> m_pConstantsCB;
 
 void Tutorial14_ComputeShader::CreateFluidTextures()
 {
-    // 1. Create and fill the CPU-side data buffer
     std::vector<float4> velocityData(kGridSize.x * kGridSize.y * kGridSize.z, float4{0, 0, 0, 0});
+
+    //velocityData[0] = float4(1, 0, 0, 1);
 
     for (int z = 0; z < kGridSize.z; ++z)
         for (int y = 0; y < kGridSize.y; ++y)
-            for (int x = 0; x < kGridSize.x; ++x)
-                velocityData[x + y * kGridSize.x + z * kGridSize.x * kGridSize.y] = float4{1, 0, 0, 1};
+            for (int x = 0; x < kGridSize.x; ++x) {
+                if (y>= kGridSize.y / 2 - 2 && y <= kGridSize.y / 2 + 2)
+                {
+                    if (x >= kGridSize.x / 2 - 2 && x <= kGridSize.x / 2 + 2)
+                    {
+                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 0, 1, 1};
+                    }
+                }
+            }
+    
+        
 
-    // 2. Describe the texture
     TextureDesc texDesc;
     texDesc.Type      = RESOURCE_DIM_TEX_3D;
     texDesc.Width     = kGridSize.x;
@@ -75,23 +85,20 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     texDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
     texDesc.Format    = TEX_FORMAT_RGBA32_FLOAT;
 
-    // 3. Prepare subresource data
+    
     TextureSubResData subresData;
     subresData.pData       = velocityData.data();
-    subresData.Stride      = sizeof(float4) * kGridSize.x;               // row size in bytes
-    subresData.DepthStride = sizeof(float4) * kGridSize.x * kGridSize.y; // slice size in bytes
+    subresData.Stride      = sizeof(float4) * kGridSize.x;
+    subresData.DepthStride = sizeof(float4) * kGridSize.x * kGridSize.y;
 
     TextureData initData;
     initData.pSubResources   = &subresData;
     initData.NumSubresources = 1;
 
-    // 4. Create the texture with initial data
     m_pDevice->CreateTexture(texDesc, &initData, &m_pVelocityTex[0]);
 
-    // 5. Create the other textures without data
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pVelocityTex[1]);
 
-    // Create pressure and divergence textures (no init data)
     texDesc.Format = TEX_FORMAT_R32_FLOAT;
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pPressureTex[0]);
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pPressureTex[1]);
@@ -229,12 +236,13 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
     attribs.ThreadGroupCountX = (kGridSize.x + 7) / 8;
     attribs.ThreadGroupCountY = (kGridSize.y + 7) / 8;
     attribs.ThreadGroupCountZ = (kGridSize.z + 7) / 8;
-
+    
+    // ADVECT
     {
         MapHelper<ConstantsStruct> CBData(m_pImmediateContext, m_pConstantsAdvectCB, MAP_WRITE, MAP_FLAG_DISCARD);
         CBData->timestep = TimeStep;
         CBData->vec = float3{1.0f / kGridSize.x, 1.0f / kGridSize.y, 1.0f / kGridSize.z};
-    } // <== Now buffer is unmapped
+    }
 
     if (auto* var = m_pAdvectSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "Constants"))
         var->Set(m_pConstantsAdvectCB);
@@ -247,7 +255,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
     {
         MapHelper<ConstantsStruct> CBData(m_pImmediateContext, m_pConstantsForcesCB, MAP_WRITE, MAP_FLAG_DISCARD);
         CBData->timestep = TimeStep;
-        CBData->vec = float3{0.0f, -9.8f, 0.0f};
+        CBData->vec = float3{1.0f, -9.8f, 0.0f};
     }
     if (auto* var = m_pForceSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "Constants"))
         var->Set(m_pConstantsForcesCB);
@@ -265,12 +273,13 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
         m_pImmediateContext->SetPipelineState(m_pJacobiPSO);
         m_pImmediateContext->CommitShaderResources(m_pJacobiSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
         m_pImmediateContext->DispatchCompute(attribs);
-        std::swap(m_pPressureTex[0], m_pPressureTex[1]);
     }
 
     m_pImmediateContext->SetPipelineState(m_pProjectPSO);
     m_pImmediateContext->CommitShaderResources(m_pProjectSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     m_pImmediateContext->DispatchCompute(attribs);
+    
+    std::swap(m_pPressureTex[0], m_pPressureTex[1]);
     std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
 }
 
@@ -281,6 +290,14 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
     // Configurar el dise�o de recursos
     PipelineResourceLayoutDesc Layout;
     Layout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    ShaderResourceVariableDesc Vars[] = {
+        {SHADER_TYPE_PIXEL, "VolumeTex", SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC}
+    };
+    Layout.Variables = Vars;
+    Layout.NumVariables = _countof(Vars);
+
+    PSOCreateInfo.PSODesc.ResourceLayout = Layout;
 
     PSOCreateInfo.PSODesc.PipelineType              = PIPELINE_TYPE_GRAPHICS;
     PSOCreateInfo.PSODesc.Name                      = "Render Volume PSO";
@@ -298,8 +315,8 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
     PSOCreateInfo.GraphicsPipeline.BlendDesc = BlendDesc;
 
     PSOCreateInfo.GraphicsPipeline.PrimitiveTopology                 = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthEnable      = false;
-    PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthWriteEnable = false;
+    PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthEnable      = true;
+    PSOCreateInfo.GraphicsPipeline.DepthStencilDesc.DepthWriteEnable = true;
 
     // Crear shaders
     ShaderCreateInfo ShaderCI;
@@ -333,7 +350,7 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
     if (m_pRenderVolumePSO)
         m_pRenderVolumePSO->CreateShaderResourceBinding(&m_pRenderVolumeSRB, true);
         if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
-            var->Set(m_pPressureTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
+            var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
 
         if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "sampLinear"))
         {
@@ -378,6 +395,20 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
 
 void Tutorial14_ComputeShader::RenderVolume()
 {
+    // Transition the velocity texture to SHADER_RESOURCE state before binding
+    ITextureView* pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+
+    StateTransitionDesc transitionDesc(
+        m_pVelocityTex[0],
+        RESOURCE_STATE_UNKNOWN,                // Old state (let engine detect)
+        RESOURCE_STATE_SHADER_RESOURCE,        // New state
+        STATE_TRANSITION_FLAG_UPDATE_STATE     // Flags
+    );
+    m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
+
+    if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
+        var->Set(pSRV);
+
     m_pImmediateContext->SetPipelineState(m_pRenderVolumePSO);
     m_pImmediateContext->CommitShaderResources(m_pRenderVolumeSRB, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
@@ -387,10 +418,17 @@ void Tutorial14_ComputeShader::RenderVolume()
     m_pImmediateContext->Draw(DrawAttrs);
 }
 
-
 // Render a frame
 void Tutorial14_ComputeShader::Render()
 {
+    ITextureView* pRTV = m_pSwapChain->GetCurrentBackBufferRTV();
+    ITextureView* pDSV = m_pSwapChain->GetDepthBufferDSV();
+    float4        ClearColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    
+    // Let the engine perform required state transitions
+    m_pImmediateContext->ClearRenderTarget(pRTV, ClearColor.Data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    m_pImmediateContext->ClearDepthStencil(pDSV, CLEAR_DEPTH_FLAG, 1.f, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
     UpdateFluidSimulation();
     RenderVolume();
 }
@@ -398,6 +436,7 @@ void Tutorial14_ComputeShader::Render()
 void Tutorial14_ComputeShader::Update(double CurrTime, double ElapsedTime)
 {
     SampleBase::Update(CurrTime, ElapsedTime);
+
 }
 
 } // namespace Diligent
