@@ -48,13 +48,15 @@ private:
     void CreateFluidTextures();
     void CreateFluidShaders();
     void CreateShaderResourceBindings();
-    void UpdateFluidSimulation();
+    void UpdateFluidSimulation(double ElapsedTime);
     void RenderVolume();
     void CreateConsantBuffer();
     void CreateRenderVolumePSO();
 
     int m_ThreadGroupSize = 256;
     int3 m_GridSize       = {32, 32, 32};
+
+    RefCntAutoPtr<ITexture> m_pVelocityStagingTex;
     
     RefCntAutoPtr<ITexture> m_pVelocityTex[2];
     RefCntAutoPtr<ITexture> m_pPressureTex[2];
@@ -77,6 +79,11 @@ private:
 
     RefCntAutoPtr<IBuffer> m_pConstantsAdvectCB;
     RefCntAutoPtr<IBuffer> m_pConstantsForcesCB;
+
+    // UI and injection controls
+    bool m_InjectVelocity = false;
+    float4 m_CustomVelocity = float4{0, 100, 0, 1};
+    void RenderUI();
 };
 
 } // namespace Diligent

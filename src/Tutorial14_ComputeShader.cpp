@@ -31,6 +31,7 @@
 #include "imgui.h"
 #include "ShaderMacroHelper.hpp"
 #include "ColorConversion.h"
+#include "TextureUtilities.h"
 
 namespace Diligent
 {
@@ -43,8 +44,8 @@ SampleBase* CreateSample()
 namespace
 {
 
-    const int3  kGridSize = {32, 32, 32};
-    const float TimeStep  = 0.0f;
+    const int3  kGridSize = {40,40,1};
+    const float TimeStep  = 1.0f;
 
 } // namespace
 
@@ -55,25 +56,26 @@ struct ConstantsStruct
 };
 RefCntAutoPtr<IBuffer> m_pConstantsCB;
 
+// Add these to your class (in the .hpp, but for demo here):
+bool m_InjectVelocity = false;
+float4 m_CustomVelocity = float4{0, 100, 0, 1};
+
 void Tutorial14_ComputeShader::CreateFluidTextures()
 {
+    // Use float4 for velocity data to match the compute shader and D3D12 UAV requirements
     std::vector<float4> velocityData(kGridSize.x * kGridSize.y * kGridSize.z, float4{0, 0, 0, 0});
-
-    //velocityData[0] = float4(1, 0, 0, 1);
 
     for (int z = 0; z < kGridSize.z; ++z)
         for (int y = 0; y < kGridSize.y; ++y)
             for (int x = 0; x < kGridSize.x; ++x) {
-                if (y>= kGridSize.y / 2 - 2 && y <= kGridSize.y / 2 + 2)
+                if (y>= kGridSize.y / 2 - 1 && y <= kGridSize.y / 2 )
                 {
-                    if (x >= kGridSize.x / 2 - 2 && x <= kGridSize.x / 2 + 2)
+                    if (x >= kGridSize.x / 2 - 1 && x <= kGridSize.x / 2 )
                     {
-                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 0, 1, 1};
+                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 1, 0, 1};
                     }
                 }
             }
-    
-        
 
     TextureDesc texDesc;
     texDesc.Type      = RESOURCE_DIM_TEX_3D;
@@ -83,9 +85,8 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     texDesc.MipLevels = 1;
     texDesc.Usage     = USAGE_DEFAULT;
     texDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    texDesc.Format    = TEX_FORMAT_RGBA32_FLOAT;
+    texDesc.Format    = TEX_FORMAT_RGBA32_FLOAT; // Use RGBA32_FLOAT for UAV support
 
-    
     TextureSubResData subresData;
     subresData.pData       = velocityData.data();
     subresData.Stride      = sizeof(float4) * kGridSize.x;
@@ -96,13 +97,20 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     initData.NumSubresources = 1;
 
     m_pDevice->CreateTexture(texDesc, &initData, &m_pVelocityTex[0]);
-
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pVelocityTex[1]);
 
     texDesc.Format = TEX_FORMAT_R32_FLOAT;
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pPressureTex[0]);
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pPressureTex[1]);
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pDivergenceTex);
+
+    // Create a staging texture for readback (also RGBA32_FLOAT)
+    TextureDesc stagingDesc = texDesc;
+    stagingDesc.Format = TEX_FORMAT_RGBA32_FLOAT;
+    stagingDesc.Usage = USAGE_STAGING;
+    stagingDesc.BindFlags = BIND_NONE;
+    stagingDesc.CPUAccessFlags = CPU_ACCESS_READ;
+    m_pDevice->CreateTexture(stagingDesc, nullptr, &m_pVelocityStagingTex);
 }
 
 void Tutorial14_ComputeShader::CreateFluidShaders()
@@ -230,17 +238,17 @@ void Tutorial14_ComputeShader::CreateShaderResourceBindings()
         var->Set(pLinearSampler);
 }
 
-void Tutorial14_ComputeShader::UpdateFluidSimulation()
+void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
 {
     DispatchComputeAttribs attribs;
     attribs.ThreadGroupCountX = (kGridSize.x + 7) / 8;
     attribs.ThreadGroupCountY = (kGridSize.y + 7) / 8;
     attribs.ThreadGroupCountZ = (kGridSize.z + 7) / 8;
-    
+
     // ADVECT
     {
         MapHelper<ConstantsStruct> CBData(m_pImmediateContext, m_pConstantsAdvectCB, MAP_WRITE, MAP_FLAG_DISCARD);
-        CBData->timestep = TimeStep;
+        CBData->timestep = TimeStep * static_cast<float>(ElapsedTime);
         CBData->vec = float3{1.0f / kGridSize.x, 1.0f / kGridSize.y, 1.0f / kGridSize.z};
     }
 
@@ -251,11 +259,86 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
     m_pImmediateContext->CommitShaderResources(m_pAdvectSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     m_pImmediateContext->DispatchCompute(attribs);
 
+    // Inject custom velocity if requested
+    if (m_InjectVelocity)
+    {
+        int centerX = kGridSize.x / 2;
+        int centerY = kGridSize.y / 2;
+        int centerZ = kGridSize.z / 2;
+        Box region;
+        region.MinX = centerX; region.MaxX = centerX + 1;
+        region.MinY = centerY; region.MaxY = centerY + 1;
+        region.MinZ = centerZ; region.MaxZ = centerZ + 1;
+        // Prepare data
+        float4 velocity = m_CustomVelocity;
+        TextureSubResData subresData;
+        subresData.pData = &velocity;
+        subresData.Stride = sizeof(float4);
+        subresData.DepthStride = sizeof(float4);
+        m_pImmediateContext->UpdateTexture(m_pVelocityTex[1], 0, 0, region, subresData, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        m_InjectVelocity = false;
+    }
+
+    // Copy and read center cell velocity from the output texture (m_pVelocityTex[1]) BEFORE swapping
+    {
+        int centerX = kGridSize.x / 2;
+        int centerY = kGridSize.y / 2;
+        int centerZ = kGridSize.z / 2;
+
+        // Copy the region from simulation texture to staging texture
+        Box region;
+        region.MinX = centerX; region.MaxX = centerX + 1;
+        region.MinY = centerY; region.MaxY = centerY + 1;
+        region.MinZ = centerZ; region.MaxZ = centerZ + 1;
+
+        CopyTextureAttribs copyAttribs = {};
+        copyAttribs.pSrcTexture = m_pVelocityTex[1]; // Use the output texture
+        copyAttribs.SrcTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        copyAttribs.pDstTexture = m_pVelocityStagingTex;
+        copyAttribs.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        copyAttribs.pSrcBox = &region;
+        copyAttribs.DstX = 0;
+        copyAttribs.DstY = 0;
+        copyAttribs.DstZ = 0;
+        m_pImmediateContext->CopyTexture(copyAttribs);
+
+        // Now map the staging texture
+        MappedTextureSubresource mappedData;
+        m_pImmediateContext->MapTextureSubresource(
+            m_pVelocityStagingTex, // ITexture*
+            0,                     // MipLevel
+            0,                     // ArraySlice
+            MAP_READ,              // MAP_TYPE
+            MAP_FLAG_DO_NOT_WAIT,  // MAP_FLAGS
+            nullptr,               // Box* (null means whole subresource)
+            mappedData             // MappedTextureSubresource&
+        );
+
+        if (mappedData.pData)
+        {
+            float* cell = reinterpret_cast<float*>(mappedData.pData);
+            LOG_INFO_MESSAGE("Center cell velocity: ", cell[0], ", ", cell[1], ", ", cell[2], ", ", cell[3]);
+        }
+        m_pImmediateContext->UnmapTextureSubresource(m_pVelocityStagingTex, 0, 0);
+    }
+    // Now swap textures AFTER reading
+    std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
+
+    // Update Advect SRB for next frame
+    if (auto* var = m_pAdvectSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "VelocityInSampler"))
+        var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+    if (auto* var = m_pAdvectSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "VelocityOut"))
+        var->Set(m_pVelocityTex[1]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS), SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+
+    // Update RenderVolume SRB for visualization
+    if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
+        var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
+
     // FORCES
     {
         MapHelper<ConstantsStruct> CBData(m_pImmediateContext, m_pConstantsForcesCB, MAP_WRITE, MAP_FLAG_DISCARD);
-        CBData->timestep = TimeStep;
-        CBData->vec = float3{1.0f, -9.8f, 0.0f};
+        CBData->timestep = TimeStep * static_cast<float>(ElapsedTime);
+        CBData->vec = float3{0.0f, 0.0f, 0.0f};
     }
     if (auto* var = m_pForceSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "Constants"))
         var->Set(m_pConstantsForcesCB);
@@ -278,7 +361,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation()
     m_pImmediateContext->SetPipelineState(m_pProjectPSO);
     m_pImmediateContext->CommitShaderResources(m_pProjectSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     m_pImmediateContext->DispatchCompute(attribs);
-    
+
     std::swap(m_pPressureTex[0], m_pPressureTex[1]);
     std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
 }
@@ -349,9 +432,7 @@ void Tutorial14_ComputeShader::CreateRenderVolumePSO()
 
     if (m_pRenderVolumePSO)
         m_pRenderVolumePSO->CreateShaderResourceBinding(&m_pRenderVolumeSRB, true);
-        if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
-            var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
-
+        
         if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "sampLinear"))
         {
             SamplerDesc SamDesc;
@@ -393,6 +474,16 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
     CreateRenderVolumePSO();
 }
 
+// Add this function to handle the UI (call it from your Render or a dedicated UI function):
+void Tutorial14_ComputeShader::RenderUI()
+{
+    ImGui::Begin("Fluid Controls");
+    ImGui::InputFloat4("Custom Velocity", &m_CustomVelocity.x);
+    if (ImGui::Button("Inject Center Velocity"))
+        m_InjectVelocity = true;
+    ImGui::End();
+}
+
 void Tutorial14_ComputeShader::RenderVolume()
 {
     // Transition the velocity texture to SHADER_RESOURCE state before binding
@@ -429,13 +520,15 @@ void Tutorial14_ComputeShader::Render()
     m_pImmediateContext->ClearRenderTarget(pRTV, ClearColor.Data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     m_pImmediateContext->ClearDepthStencil(pDSV, CLEAR_DEPTH_FLAG, 1.f, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
-    UpdateFluidSimulation();
     RenderVolume();
+    RenderUI();
 }
 
 void Tutorial14_ComputeShader::Update(double CurrTime, double ElapsedTime)
 {
     SampleBase::Update(CurrTime, ElapsedTime);
+
+    UpdateFluidSimulation(ElapsedTime);
 
 }
 
