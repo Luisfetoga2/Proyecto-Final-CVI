@@ -62,6 +62,9 @@ float4 m_CustomVelocity = float4{0, 100, 0, 1};
 // Visualization mode: 0 = Velocity, 1 = Pressure
 int m_VisualizationMode = 0;
 
+// Add a 1x1x1 RGBA32_FLOAT staging texture for injection
+RefCntAutoPtr<ITexture> m_pVelocityInjectStagingTex;
+
 void Tutorial14_ComputeShader::CreateFluidTextures()
 {
     // Use float4 for velocity data to match the compute shader and D3D12 UAV requirements
@@ -113,6 +116,14 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     stagingDesc.BindFlags = BIND_NONE;
     stagingDesc.CPUAccessFlags = CPU_ACCESS_READ;
     m_pDevice->CreateTexture(stagingDesc, nullptr, &m_pVelocityStagingTex);
+
+    // Create a 1x1x1 staging texture for injection (CPU write)
+    TextureDesc injectDesc = stagingDesc;
+    injectDesc.Width = 1;
+    injectDesc.Height = 1;
+    injectDesc.Depth = 1;
+    injectDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+    m_pDevice->CreateTexture(injectDesc, nullptr, &m_pVelocityInjectStagingTex);
 }
 
 void Tutorial14_ComputeShader::CreateFluidShaders()
@@ -242,6 +253,7 @@ void Tutorial14_ComputeShader::CreateShaderResourceBindings()
 
 void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
 {
+    LOG_INFO_MESSAGE("UpdateFluidSimulation called, ElapsedTime = ", ElapsedTime);
     DispatchComputeAttribs attribs;
     attribs.ThreadGroupCountX = (kGridSize.x + 7) / 8;
     attribs.ThreadGroupCountY = (kGridSize.y + 7) / 8;
@@ -264,21 +276,78 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
     // Inject custom velocity if requested
     if (m_InjectVelocity)
     {
+        // Write to the 1x1x1 staging texture
+        MappedTextureSubresource mapped;
+        m_pImmediateContext->MapTextureSubresource(
+            m_pVelocityInjectStagingTex, 0, 0, MAP_WRITE, MAP_FLAG_DISCARD, nullptr, mapped);
+        if (mapped.pData)
+        {
+            float* cell = reinterpret_cast<float*>(mapped.pData);
+            cell[0] = m_CustomVelocity.x;
+            cell[1] = m_CustomVelocity.y;
+            cell[2] = m_CustomVelocity.z;
+            cell[3] = m_CustomVelocity.w;
+        }
+        m_pImmediateContext->UnmapTextureSubresource(m_pVelocityInjectStagingTex, 0, 0);
+
+        // Removed invalid debug log: cannot map CPU_WRITE-only texture for reading
+
         int centerX = kGridSize.x / 2;
         int centerY = kGridSize.y / 2;
         int centerZ = kGridSize.z / 2;
-        Box region;
-        region.MinX = centerX; region.MaxX = centerX + 1;
-        region.MinY = centerY; region.MaxY = centerY + 1;
-        region.MinZ = centerZ; region.MaxZ = centerZ + 1;
-        // Prepare data
-        float4 velocity = m_CustomVelocity;
-        TextureSubResData subresData;
-        subresData.pData = &velocity;
-        subresData.Stride = sizeof(float4);
-        subresData.DepthStride = sizeof(float4);
-        m_pImmediateContext->UpdateTexture(m_pVelocityTex[1], 0, 0, region, subresData, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+        // Explicitly transition destination textures to COPY_DEST
+        StateTransitionDesc transitions[2] = {
+            {m_pVelocityTex[0], RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_COPY_DEST, STATE_TRANSITION_FLAG_UPDATE_STATE},
+            {m_pVelocityTex[1], RESOURCE_STATE_UNKNOWN, RESOURCE_STATE_COPY_DEST, STATE_TRANSITION_FLAG_UPDATE_STATE}
+        };
+        m_pImmediateContext->TransitionResourceStates(2, transitions);
+
+        // Copy from staging to both velocity textures
+        CopyTextureAttribs copyAttribs = {};
+        copyAttribs.pSrcTexture = m_pVelocityInjectStagingTex;
+        copyAttribs.SrcTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        copyAttribs.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        copyAttribs.DstX = centerX;
+        copyAttribs.DstY = centerY;
+        copyAttribs.DstZ = centerZ;
+        copyAttribs.pDstTexture = m_pVelocityTex[0];
+        m_pImmediateContext->CopyTexture(copyAttribs);
+        copyAttribs.pDstTexture = m_pVelocityTex[1];
+        m_pImmediateContext->CopyTexture(copyAttribs);
+
+        // Transition back to UAV for simulation
+        StateTransitionDesc transitionsBack[2] = {
+            {m_pVelocityTex[0], RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE},
+            {m_pVelocityTex[1], RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_UPDATE_STATE}
+        };
+        m_pImmediateContext->TransitionResourceStates(2, transitionsBack);
+
         m_InjectVelocity = false;
+        // Log the injected value immediately after injection (on m_pVelocityTex[1])
+        Box logRegion;
+        logRegion.MinX = centerX; logRegion.MaxX = centerX + 1;
+        logRegion.MinY = centerY; logRegion.MaxY = centerY + 1;
+        logRegion.MinZ = centerZ; logRegion.MaxZ = centerZ + 1;
+        CopyTextureAttribs logCopyAttribs = {};
+        logCopyAttribs.pSrcTexture = m_pVelocityTex[1];
+        logCopyAttribs.SrcTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        logCopyAttribs.pDstTexture = m_pVelocityStagingTex;
+        logCopyAttribs.DstTextureTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        logCopyAttribs.pSrcBox = &logRegion;
+        logCopyAttribs.DstX = 0;
+        logCopyAttribs.DstY = 0;
+        logCopyAttribs.DstZ = 0;
+        m_pImmediateContext->CopyTexture(logCopyAttribs);
+        MappedTextureSubresource mappedData;
+        m_pImmediateContext->MapTextureSubresource(
+            m_pVelocityStagingTex, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, mappedData);
+        if (mappedData.pData)
+        {
+            float* cell = reinterpret_cast<float*>(mappedData.pData);
+            LOG_INFO_MESSAGE("[Injection] Center cell velocity: ", cell[0], ", ", cell[1], ", ", cell[2], ", ", cell[3]);
+        }
+        m_pImmediateContext->UnmapTextureSubresource(m_pVelocityStagingTex, 0, 0);
     }
 
     // Copy and read center cell velocity from the output texture (m_pVelocityTex[1]) BEFORE swapping
@@ -286,6 +355,11 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
         int centerX = kGridSize.x / 2;
         int centerY = kGridSize.y / 2;
         int centerZ = kGridSize.z / 2;
+
+        // Also check a cell far from the center
+        int edgeX = 0;
+        int edgeY = 0;
+        int edgeZ = 0;
 
         // Copy the region from simulation texture to staging texture
         Box region;
@@ -322,7 +396,27 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
             LOG_INFO_MESSAGE("Center cell velocity: ", cell[0], ", ", cell[1], ", ", cell[2], ", ", cell[3]);
         }
         m_pImmediateContext->UnmapTextureSubresource(m_pVelocityStagingTex, 0, 0);
+
+        // Now check the edge cell
+        Box edgeRegion;
+        edgeRegion.MinX = edgeX; edgeRegion.MaxX = edgeX + 1;
+        edgeRegion.MinY = edgeY; edgeRegion.MaxY = edgeY + 1;
+        edgeRegion.MinZ = edgeZ; edgeRegion.MaxZ = edgeZ + 1;
+        copyAttribs.pSrcBox = &edgeRegion;
+        copyAttribs.DstX = 0;
+        copyAttribs.DstY = 0;
+        copyAttribs.DstZ = 0;
+        m_pImmediateContext->CopyTexture(copyAttribs);
+        m_pImmediateContext->MapTextureSubresource(
+            m_pVelocityStagingTex, 0, 0, MAP_READ, MAP_FLAG_DO_NOT_WAIT, nullptr, mappedData);
+        if (mappedData.pData)
+        {
+            float* cell = reinterpret_cast<float*>(mappedData.pData);
+            LOG_INFO_MESSAGE("Edge cell velocity: ", cell[0], ", ", cell[1], ", ", cell[2], ", ", cell[3]);
+        }
+        m_pImmediateContext->UnmapTextureSubresource(m_pVelocityStagingTex, 0, 0);
     }
+
     // Now swap textures AFTER reading
     std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
 
@@ -365,7 +459,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
     m_pImmediateContext->DispatchCompute(attribs);
 
     std::swap(m_pPressureTex[0], m_pPressureTex[1]);
-    std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
+    //std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
 }
 
 void Tutorial14_ComputeShader::CreateRenderVolumePSO()
@@ -494,10 +588,10 @@ void Tutorial14_ComputeShader::RenderVolume()
     ITextureView* pSRV = nullptr;
     if (m_VisualizationMode == 0) // Velocity
     {
-        pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        pSRV = m_pVelocityTex[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
         // Transition the velocity texture to SHADER_RESOURCE state before binding
         StateTransitionDesc transitionDesc(
-            m_pVelocityTex[0],
+            m_pVelocityTex[1],
             RESOURCE_STATE_UNKNOWN,
             RESOURCE_STATE_SHADER_RESOURCE,
             STATE_TRANSITION_FLAG_UPDATE_STATE
@@ -506,9 +600,9 @@ void Tutorial14_ComputeShader::RenderVolume()
     }
     else // Pressure
     {
-        pSRV = m_pPressureTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        pSRV = m_pPressureTex[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
         StateTransitionDesc transitionDesc(
-            m_pPressureTex[0],
+            m_pPressureTex[1],
             RESOURCE_STATE_UNKNOWN,
             RESOURCE_STATE_SHADER_RESOURCE,
             STATE_TRANSITION_FLAG_UPDATE_STATE
