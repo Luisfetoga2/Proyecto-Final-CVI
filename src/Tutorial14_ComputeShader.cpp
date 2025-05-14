@@ -59,6 +59,8 @@ RefCntAutoPtr<IBuffer> m_pConstantsCB;
 // Add these to your class (in the .hpp, but for demo here):
 bool m_InjectVelocity = false;
 float4 m_CustomVelocity = float4{0, 100, 0, 1};
+// Visualization mode: 0 = Velocity, 1 = Pressure
+int m_VisualizationMode = 0;
 
 void Tutorial14_ComputeShader::CreateFluidTextures()
 {
@@ -481,21 +483,38 @@ void Tutorial14_ComputeShader::RenderUI()
     ImGui::InputFloat4("Custom Velocity", &m_CustomVelocity.x);
     if (ImGui::Button("Inject Center Velocity"))
         m_InjectVelocity = true;
+    const char* visModes[] = { "Velocity", "Pressure" };
+    ImGui::Combo("Visualization", &m_VisualizationMode, visModes, IM_ARRAYSIZE(visModes));
     ImGui::End();
 }
 
 void Tutorial14_ComputeShader::RenderVolume()
 {
-    // Transition the velocity texture to SHADER_RESOURCE state before binding
-    ITextureView* pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-
-    StateTransitionDesc transitionDesc(
-        m_pVelocityTex[0],
-        RESOURCE_STATE_UNKNOWN,                // Old state (let engine detect)
-        RESOURCE_STATE_SHADER_RESOURCE,        // New state
-        STATE_TRANSITION_FLAG_UPDATE_STATE     // Flags
-    );
-    m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
+    // Choose which texture to visualize
+    ITextureView* pSRV = nullptr;
+    if (m_VisualizationMode == 0) // Velocity
+    {
+        pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        // Transition the velocity texture to SHADER_RESOURCE state before binding
+        StateTransitionDesc transitionDesc(
+            m_pVelocityTex[0],
+            RESOURCE_STATE_UNKNOWN,
+            RESOURCE_STATE_SHADER_RESOURCE,
+            STATE_TRANSITION_FLAG_UPDATE_STATE
+        );
+        m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
+    }
+    else // Pressure
+    {
+        pSRV = m_pPressureTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        StateTransitionDesc transitionDesc(
+            m_pPressureTex[0],
+            RESOURCE_STATE_UNKNOWN,
+            RESOURCE_STATE_SHADER_RESOURCE,
+            STATE_TRANSITION_FLAG_UPDATE_STATE
+        );
+        m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
+    }
 
     if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
         var->Set(pSRV);
