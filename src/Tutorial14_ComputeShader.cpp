@@ -45,7 +45,7 @@ namespace
 {
 
     const int3  kGridSize = {40,40,1};
-    const float TimeStep  = 1.0f;
+    const float TimeStep  = 0.016f; // Smaller timestep for better stability
 
 } // namespace
 
@@ -66,23 +66,16 @@ int m_VisualizationMode = 0;
 RefCntAutoPtr<ITexture> m_pVelocityInjectStagingTex;
 
 void Tutorial14_ComputeShader::CreateFluidTextures()
-{
-    // Use float4 for velocity data to match the compute shader and D3D12 UAV requirements
+{    // Use float4 for velocity data to match the compute shader and D3D12 UAV requirements
     std::vector<float4> velocityData(kGridSize.x * kGridSize.y * kGridSize.z, float4{0, 0, 0, 0});
 
+    // Initialize with zero velocity
     for (int z = 0; z < kGridSize.z; ++z)
         for (int y = 0; y < kGridSize.y; ++y)
             for (int x = 0; x < kGridSize.x; ++x) {
-                if (y>= kGridSize.y / 2 - 1 && y <= kGridSize.y / 2 )
-                {
-                    if (x >= kGridSize.x / 2 - 1 && x <= kGridSize.x / 2 )
-                    {
-                        velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 1, 0, 1};
-                    }
-                }
+                velocityData[z * kGridSize.y * kGridSize.x + y * kGridSize.x + x] = float4{0, 0, 0, 1};
             }
-
-    TextureDesc texDesc;
+            TextureDesc texDesc;
     texDesc.Type      = RESOURCE_DIM_TEX_3D;
     texDesc.Width     = kGridSize.x;
     texDesc.Height    = kGridSize.y;
@@ -271,9 +264,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
 
     m_pImmediateContext->SetPipelineState(m_pAdvectPSO);
     m_pImmediateContext->CommitShaderResources(m_pAdvectSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
-    m_pImmediateContext->DispatchCompute(attribs);
-
-    // Inject custom velocity if requested
+    m_pImmediateContext->DispatchCompute(attribs);    // Inject custom velocity if requested
     if (m_InjectVelocity)
     {
         // Write to the 1x1x1 staging texture
@@ -281,16 +272,17 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
         m_pImmediateContext->MapTextureSubresource(
             m_pVelocityInjectStagingTex, 0, 0, MAP_WRITE, MAP_FLAG_DISCARD, nullptr, mapped);
         if (mapped.pData)
-        {
+        {        // Make sure we're using the exact values the user entered
             float* cell = reinterpret_cast<float*>(mapped.pData);
             cell[0] = m_CustomVelocity.x;
             cell[1] = m_CustomVelocity.y;
             cell[2] = m_CustomVelocity.z;
-            cell[3] = m_CustomVelocity.w;
+            cell[3] = 1.0f; // Set w component to 1.0
+            
+            // Log what we're injecting
+            LOG_INFO_MESSAGE("Injecting velocity: ", cell[0], ", ", cell[1], ", ", cell[2]);
         }
         m_pImmediateContext->UnmapTextureSubresource(m_pVelocityInjectStagingTex, 0, 0);
-
-        // Removed invalid debug log: cannot map CPU_WRITE-only texture for reading
 
         int centerX = kGridSize.x / 2;
         int centerY = kGridSize.y / 2;
@@ -415,9 +407,7 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
             LOG_INFO_MESSAGE("Edge cell velocity: ", cell[0], ", ", cell[1], ", ", cell[2], ", ", cell[3]);
         }
         m_pImmediateContext->UnmapTextureSubresource(m_pVelocityStagingTex, 0, 0);
-    }
-
-    // Now swap textures AFTER reading
+    }    // Now swap textures AFTER reading
     std::swap(m_pVelocityTex[0], m_pVelocityTex[1]);
 
     // Update Advect SRB for next frame
@@ -426,7 +416,16 @@ void Tutorial14_ComputeShader::UpdateFluidSimulation(double ElapsedTime)
     if (auto* var = m_pAdvectSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "VelocityOut"))
         var->Set(m_pVelocityTex[1]->GetDefaultView(TEXTURE_VIEW_UNORDERED_ACCESS), SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
 
-    // Update RenderVolume SRB for visualization
+    // Update RenderVolume SRB for visualization - use m_pVelocityTex[0] which has the most current velocity
+    // Important: Make sure the texture is in the right state for rendering
+    StateTransitionDesc visTransitionDesc(
+        m_pVelocityTex[0],
+        RESOURCE_STATE_UNKNOWN,
+        RESOURCE_STATE_SHADER_RESOURCE,
+        STATE_TRANSITION_FLAG_UPDATE_STATE
+    );
+    m_pImmediateContext->TransitionResourceStates(1, &visTransitionDesc);
+    
     if (auto* var = m_pRenderVolumeSRB->GetVariableByName(SHADER_TYPE_PIXEL, "VolumeTex"))
         var->Set(m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), SET_SHADER_RESOURCE_FLAG_ALLOW_OVERWRITE);
 
@@ -574,29 +573,79 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
 void Tutorial14_ComputeShader::RenderUI()
 {
     ImGui::Begin("Fluid Controls");
-    ImGui::InputFloat4("Custom Velocity", &m_CustomVelocity.x);
-    if (ImGui::Button("Inject Center Velocity"))
+    
+    // Velocity injection controls with presets
+    ImGui::Text("Velocity Injection:");
+    ImGui::DragFloat("X Velocity", &m_CustomVelocity.x, 1.0f, -100.0f, 100.0f);
+    ImGui::DragFloat("Y Velocity", &m_CustomVelocity.y, 1.0f, -100.0f, 100.0f);
+    ImGui::DragFloat("Z Velocity", &m_CustomVelocity.z, 1.0f, -100.0f, 100.0f);
+      // Preset buttons with stronger values
+    if (ImGui::Button("Right"))
+    {
+        m_CustomVelocity = float4(100, 0, 0, 1);
         m_InjectVelocity = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Left"))
+    {
+        m_CustomVelocity = float4(-100, 0, 0, 1);
+        m_InjectVelocity = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Up"))
+    {
+        m_CustomVelocity = float4(0, 100, 0, 1);
+        m_InjectVelocity = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Down"))
+    {
+        m_CustomVelocity = float4(0, -100, 0, 1);
+        m_InjectVelocity = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Strong Burst"))
+    {
+        m_CustomVelocity = float4(200, 200, 0, 1);
+        m_InjectVelocity = true;
+    }
+    
+    // Reset and inject buttons
+    if (ImGui::Button("Reset to Zero"))
+    {
+        m_CustomVelocity = float4(0, 0, 0, 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Inject Custom"))
+        m_InjectVelocity = true;
+        
+    // Display current center velocity
+    ImGui::Separator();
+    ImGui::Text("Visualization:");
     const char* visModes[] = { "Velocity", "Pressure" };
-    ImGui::Combo("Visualization", &m_VisualizationMode, visModes, IM_ARRAYSIZE(visModes));
+    ImGui::Combo("Mode", &m_VisualizationMode, visModes, IM_ARRAYSIZE(visModes));
+    
     ImGui::End();
 }
 
 void Tutorial14_ComputeShader::RenderVolume()
-{
-    // Choose which texture to visualize
+{    // Choose which texture to visualize
     ITextureView* pSRV = nullptr;
     if (m_VisualizationMode == 0) // Velocity
     {
-        pSRV = m_pVelocityTex[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        // Use texture 0 which is the most recent velocity after swapping
+        pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
         // Transition the velocity texture to SHADER_RESOURCE state before binding
         StateTransitionDesc transitionDesc(
-            m_pVelocityTex[1],
+            m_pVelocityTex[0],
             RESOURCE_STATE_UNKNOWN,
             RESOURCE_STATE_SHADER_RESOURCE,
             STATE_TRANSITION_FLAG_UPDATE_STATE
         );
         m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
+        
+        // Log rendering the velocity texture
+        LOG_INFO_MESSAGE("Rendering velocity visualization");
     }
     else // Pressure
     {

@@ -7,22 +7,47 @@ float4 main(float4 Pos : SV_POSITION, float2 UV : TEX_COORD) : SV_TARGET
     float3 rayPos = float3(UV, 0);
 
     float4 accum = float4(0, 0, 0, 0);
-    float stepSize = 1;
+    float stepSize = 0.01; // Smaller step size for more detailed rendering
 
-    for (int i = 0; i < 64; ++i)
+    for (int i = 0; i < 128; ++i) // More iterations
     {
-        float4 vel = VolumeTex.SampleLevel(sampLinear, rayPos, 0);
-        float mag = length(vel.xyz);
-
-        // Color for direction, black if velocity is zero
-        float3 dirColor = (mag > 0.0001) ? abs(normalize(vel.xyz)) : float3(0, 0, 0);
+        float4 vel = VolumeTex.SampleLevel(sampLinear, rayPos, 0);        float mag = length(vel.xyz);
         
-        float4 sampleCol = float4(dirColor, mag);
-
-        sampleCol.a = saturate(mag);
-
-        accum.rgb += (1 - accum.a) * sampleCol.rgb * sampleCol.a;
-        accum.a += (1 - accum.a) * sampleCol.a;
+        // Enhanced velocity visualization using HSV-like coloring
+        float3 normalizedVel = float3(0,0,0);
+        if (mag > 0.00001) { // Reduced threshold to see even smaller velocities
+            normalizedVel = vel.xyz / mag; // Direction only
+            
+            // Create more vibrant colors based on velocity direction
+            // Convert direction to a vibrant color
+            float3 absVel = abs(normalizedVel);
+            
+            // Direction-based coloring (creates clear streaks for movement)
+            float3 velColor = float3(
+                saturate(absVel.x),                   // Red component 
+                saturate(absVel.y),                   // Green component
+                saturate(absVel.z)                    // Blue component
+            );
+            
+            // Enhance the dominant direction for clearer visualization
+            float maxComp = max(max(absVel.x, absVel.y), absVel.z);
+            if (absVel.x == maxComp) velColor.x *= 1.5;
+            if (absVel.y == maxComp) velColor.y *= 1.5;
+            if (absVel.z == maxComp) velColor.z *= 1.5;            // Scale color by velocity magnitude for intensity but with higher multiplier
+            velColor = normalize(velColor) * saturate(mag * 1.0); // 10x stronger visualization
+            
+            // Scale alpha by magnitude for visibility - much higher multiplier
+            float alpha = saturate(mag * 1.0); // Much higher multiplier for better visibility
+            
+            float4 sampleCol = float4(velColor, alpha);
+            
+            // Front-to-back blending
+            accum.rgb += (1 - accum.a) * sampleCol.rgb * sampleCol.a;
+            accum.a += (1 - accum.a) * sampleCol.a;
+        } else {
+            // Skip invisible samples
+            float4 sampleCol = float4(0, 0, 0, 0);
+        }
 
         rayPos += rayDir * stepSize;
         if (rayPos.x > 1 || rayPos.y > 1 || rayPos.z > 1)
