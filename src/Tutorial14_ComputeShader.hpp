@@ -80,7 +80,6 @@ private:
     RefCntAutoPtr<IBuffer> m_pConstantsAdvectCB;
     RefCntAutoPtr<IBuffer> m_pConstantsForcesCB;
 
-    // UI and injection controls
     bool m_InjectVelocity = false;
     float4 m_CustomVelocity = float4{0, 100, 0, 1};
     void RenderUI();

@@ -45,7 +45,7 @@ namespace
 {
 
     const int3  kGridSize = {40,40,1};
-    const float TimeStep  = 0.016f; // Smaller timestep for better stability
+    const float TimeStep  = 0.016f;
 
 } // namespace
 
@@ -56,20 +56,17 @@ struct ConstantsStruct
 };
 RefCntAutoPtr<IBuffer> m_pConstantsCB;
 
-// Add these to your class (in the .hpp, but for demo here):
 bool m_InjectVelocity = false;
 float4 m_CustomVelocity = float4{0, 100, 0, 1};
-// Visualization mode: 0 = Velocity, 1 = Pressure
+// 0 = Velocity, 1 = Pressure
 int m_VisualizationMode = 0;
 
-// Add a 1x1x1 RGBA32_FLOAT staging texture for injection
 RefCntAutoPtr<ITexture> m_pVelocityInjectStagingTex;
 
 void Tutorial14_ComputeShader::CreateFluidTextures()
-{    // Use float4 for velocity data to match the compute shader and D3D12 UAV requirements
+{    
     std::vector<float4> velocityData(kGridSize.x * kGridSize.y * kGridSize.z, float4{0, 0, 0, 0});
 
-    // Initialize with zero velocity
     for (int z = 0; z < kGridSize.z; ++z)
         for (int y = 0; y < kGridSize.y; ++y)
             for (int x = 0; x < kGridSize.x; ++x) {
@@ -83,7 +80,7 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     texDesc.MipLevels = 1;
     texDesc.Usage     = USAGE_DEFAULT;
     texDesc.BindFlags = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
-    texDesc.Format    = TEX_FORMAT_RGBA32_FLOAT; // Use RGBA32_FLOAT for UAV support
+    texDesc.Format    = TEX_FORMAT_RGBA32_FLOAT;
 
     TextureSubResData subresData;
     subresData.pData       = velocityData.data();
@@ -102,7 +99,6 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pPressureTex[1]);
     m_pDevice->CreateTexture(texDesc, nullptr, &m_pDivergenceTex);
 
-    // Create a staging texture for readback (also RGBA32_FLOAT)
     TextureDesc stagingDesc = texDesc;
     stagingDesc.Format = TEX_FORMAT_RGBA32_FLOAT;
     stagingDesc.Usage = USAGE_STAGING;
@@ -110,7 +106,6 @@ void Tutorial14_ComputeShader::CreateFluidTextures()
     stagingDesc.CPUAccessFlags = CPU_ACCESS_READ;
     m_pDevice->CreateTexture(stagingDesc, nullptr, &m_pVelocityStagingTex);
 
-    // Create a 1x1x1 staging texture for injection (CPU write)
     TextureDesc injectDesc = stagingDesc;
     injectDesc.Width = 1;
     injectDesc.Height = 1;
@@ -569,17 +564,15 @@ void Tutorial14_ComputeShader::Initialize(const SampleInitInfo& InitInfo)
     CreateRenderVolumePSO();
 }
 
-// Add this function to handle the UI (call it from your Render or a dedicated UI function):
 void Tutorial14_ComputeShader::RenderUI()
 {
     ImGui::Begin("Fluid Controls");
     
-    // Velocity injection controls with presets
     ImGui::Text("Velocity Injection:");
     ImGui::DragFloat("X Velocity", &m_CustomVelocity.x, 1.0f, -100.0f, 100.0f);
     ImGui::DragFloat("Y Velocity", &m_CustomVelocity.y, 1.0f, -100.0f, 100.0f);
     ImGui::DragFloat("Z Velocity", &m_CustomVelocity.z, 1.0f, -100.0f, 100.0f);
-      // Preset buttons with stronger values
+
     if (ImGui::Button("Right"))
     {
         m_CustomVelocity = float4(100, 0, 0, 1);
@@ -619,7 +612,6 @@ void Tutorial14_ComputeShader::RenderUI()
     if (ImGui::Button("Inject Custom"))
         m_InjectVelocity = true;
         
-    // Display current center velocity
     ImGui::Separator();
     ImGui::Text("Visualization:");
     const char* visModes[] = { "Velocity", "Pressure" };
@@ -629,13 +621,12 @@ void Tutorial14_ComputeShader::RenderUI()
 }
 
 void Tutorial14_ComputeShader::RenderVolume()
-{    // Choose which texture to visualize
+{
     ITextureView* pSRV = nullptr;
     if (m_VisualizationMode == 0) // Velocity
     {
-        // Use texture 0 which is the most recent velocity after swapping
+
         pSRV = m_pVelocityTex[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
-        // Transition the velocity texture to SHADER_RESOURCE state before binding
         StateTransitionDesc transitionDesc(
             m_pVelocityTex[0],
             RESOURCE_STATE_UNKNOWN,
@@ -644,8 +635,6 @@ void Tutorial14_ComputeShader::RenderVolume()
         );
         m_pImmediateContext->TransitionResourceStates(1, &transitionDesc);
         
-        // Log rendering the velocity texture
-        LOG_INFO_MESSAGE("Rendering velocity visualization");
     }
     else // Pressure
     {
@@ -677,8 +666,7 @@ void Tutorial14_ComputeShader::Render()
     ITextureView* pRTV = m_pSwapChain->GetCurrentBackBufferRTV();
     ITextureView* pDSV = m_pSwapChain->GetDepthBufferDSV();
     float4        ClearColor = {1.0f, 1.0f, 1.0f, 1.0f};
-    
-    // Let the engine perform required state transitions
+
     m_pImmediateContext->ClearRenderTarget(pRTV, ClearColor.Data(), RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     m_pImmediateContext->ClearDepthStencil(pDSV, CLEAR_DEPTH_FLAG, 1.f, 0, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
